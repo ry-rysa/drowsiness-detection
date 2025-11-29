@@ -21,7 +21,6 @@ tts_engine.setProperty('volume', 0.9)
 
 # speech recognition
 recognizer = sr.Recognizer()
-microphone = sr.Microphone()
 
 system_active = False # drowsiness detection is ON
 user_is_sleepy = False # if user said they're sleepy
@@ -36,7 +35,7 @@ def listeningcommand():
     global listening_mode
     listening_mode = True # listening
 
-    with microphone as source:
+    with sr.Microphone as source:
         print("Listening...")
         recognizer.adjust_for_ambient_noise(source, duration=0.5)
         try:
@@ -74,7 +73,7 @@ def voice_interaction():
     global system_active, user_is_sleepy
 
     speak("Hello! I'm your drowsiness detection assistant.")
-    time.sleep(1)
+    time.sleep(7)
 
     # ask if user plans to drive
     speak("Are you planning to drive right now?")
@@ -125,7 +124,7 @@ def voice_interaction():
 def listen_for_wake_word():
     global system_active, user_is_sleepy
     
-    with microphone as source:
+    with sr.Microphone as source:
         recognizer.adjust_for_ambient_noise(source, duration=0.5) # adjust background noise
         
         try:
