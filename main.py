@@ -11,34 +11,49 @@ import speech_recognition as sr
 import pyttsx3
 import threading
 
+# feel free to change the code <3
+
 mixer.init()
-mixer.music.load("alert.wav")
+# pls add one more file and revise the code there should be alert and critical alert
+mixer.music.load("audio/alert.wav")
 
 # text to speech
 tts_engine = pyttsx3.init()
 tts_engine.setProperty('rate', 150)
 tts_engine.setProperty('volume', 0.9)
 
-# speech recognition
+# set up voice recognition
 recognizer = sr.Recognizer()
-microphone = sr.Microphone()
+microphoen = sr.Microphone()
 
 system_active = False # drowsiness detection is ON
 user_is_sleepy = False # if user said they're sleepy
 listening_mode = False 
+calibration_done = False
+calibrated_ear_threshold = None
 
-def speak(text):
-    print(f"System: {text}")
-    tts_engine.say(text)
-    tts_engine.runAndWait()
+# button for on/off
+button_rect = None
+button_hover = False
+
+def play_audio(file):
+    # try:
+    #     sound = mixer.Sound(file)
+
+    mixer.music.load(file)
+    mixer.music.play()
+    while mixer.music.get_busy():
+        time.sleep(0.1)
 
 def listeningcommand():
     global listening_mode
     listening_mode = True # listening
 
-    with microphone as source:
+    with sr.Microphone as source:
         print("Listening...")
+        recognizer.energy_threshold = 500
         recognizer.adjust_for_ambient_noise(source, duration=0.5)
+        recognizer.adjust_for_ambient_noise(source, duration=1)
         try:
             audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
             command = recognizer.recognize_google(audio).lower()
@@ -52,7 +67,7 @@ def listeningcommand():
             listening_mode = False
             return ""
         except sr.RequestError:
-            speak("Sorry, speech service is unavailable")
+            # play audio error
             listening_mode = False
             return ""
 
@@ -67,17 +82,163 @@ def input_yesno(command):
     for word in no_words:
         if word in command:
             return False
-
     return None # the input unclear
 
-def voice_interaction():
-    global system_active, user_is_sleepy
+# yeye calibrate
+def calibrate_eye_ratio(detect, predict, cap):
+    global calibrated_ear_threshold, calibration_done
 
-    speak("Hello! I'm your drowsiness detection assistant.")
+    print("Starting eye calibration")
+    # play audio lets calibrate or smth
     time.sleep(1)
 
+    # play audio please look at the camera
+    time.sleep(2)
+
+    open_eye_ears = []
+    closed_eye_ears = []
+
+    # open eye value
+    frames_collected = 0
+    start_time = time.time()
+
+    while frames_collected < 90 and (time.time() - start_time) < 5:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        
+        frame = imutils.resize(frame, width=640)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        subjects = detect(gray, 0)
+        
+        for subject in subjects:
+            shape = predict(gray, subject)
+            shape = face_utils.shape_to_np(shape)
+            
+            (lStart, lEnd) = face_utils.FACIAL_LANDMARKS_68_IDXS['left_eye']
+            (rStart, rEnd) = face_utils.FACIAL_LANDMARKS_68_IDXS['right_eye']
+            
+            leftEye = shape[lStart:lEnd]
+            rightEye = shape[rStart:rEnd]
+            leftEar = eye_aspect_ratio(leftEye)
+            rightEar = eye_aspect_ratio(rightEye)
+            ear = (leftEar + rightEar) / 2.0
+            
+            open_eye_ears.append(ear)
+            frames_collected += 1
+            
+            # visual feedback
+            leftEyeHull = cv2.convexHull(leftEye)
+            rightEyeHull = cv2.convexHull(rightEye)
+            cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 0), 2)
+            cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 0), 2)
+            
+            cv2.putText(frame, "CALIBRATION: Keep eyes OPEN", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            cv2.putText(frame, f"Collecting: {frames_collected}/90", (10, 70),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(frame, f"Current EAR: {ear:.3f}", (10, 110),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        cv2.imshow('Voice-Activated Drowsiness Detection', frame)
+        cv2.waitKey(1)
+    
+    if len(open_eye_ears) < 30:
+        # play_audio calibration failed 
+        return None
+    
+    avg_open_ear = np.mean(open_eye_ears)
+    print(f"Average open eye EAR: {avg_open_ear:.3f}")
+    
+    # blink detection
+    # attach audio pls blink 5 times slowly
+    time.sleep(1)
+    
+    blink_count = 0
+    last_blink_time = 0
+    blink_ear_values = []
+    was_open = True
+    
+    while blink_count < 5:
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        
+        frame = imutils.resize(frame, width=640)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        
+        subjects = detect(gray, 0)
+        
+        for subject in subjects:
+            shape = predict(gray, subject)
+            shape = face_utils.shape_to_np(shape)
+            
+            leftEye = shape[lStart:lEnd]
+            rightEye = shape[rStart:rEnd]
+            leftEar = eye_aspect_ratio(leftEye)
+            rightEar = eye_aspect_ratio(rightEye)
+            ear = (leftEar + rightEar) / 2.0
+            
+            # detect blink with adaptive threshold
+            current_time = time.time()
+            if ear < avg_open_ear * 0.7 and was_open and (current_time - last_blink_time) > 0.3:
+                blink_count += 1
+                last_blink_time = current_time
+                was_open = False
+                blink_ear_values.append(ear)
+                print(f"Blink {blink_count} detected! EAR: {ear:.3f}")
+            elif ear > avg_open_ear * 0.85:
+                was_open = True
+            
+            # visual feedback
+            leftEyeHull = cv2.convexHull(leftEye)
+            rightEyeHull = cv2.convexHull(rightEye)
+            cv2.drawContours(frame, [leftEyeHull], -1, (0, 255, 255), 2)
+            cv2.drawContours(frame, [rightEyeHull], -1, (0, 255, 255), 2)
+            
+            cv2.putText(frame, "CALIBRATION: BLINK 5 times", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(frame, f"Blinks detected: {blink_count}/5", (10, 70),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            cv2.putText(frame, f"Current EAR: {ear:.3f}", (10, 110),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        cv2.imshow('Voice-Activated Drowsiness Detection', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            return None
+    
+    # calculate personalized threshold
+    if len(blink_ear_values) >= 3:
+        avg_closed_ear = np.mean(blink_ear_values)
+        print(f"Average closed eye EAR: {avg_closed_ear:.3f}")
+        
+        # set threshold as midpoint between open and closed, with safety margin
+        calibrated_threshold = avg_closed_ear + (avg_open_ear - avg_closed_ear) * 0.35
+        calibrated_threshold = min(calibrated_threshold, avg_open_ear * 0.75)
+        
+        print(f"\n{'='*60}")
+        print(f"CALIBRATION COMPLETE!")
+        print(f"Open Eye EAR: {avg_open_ear:.3f}")
+        print(f"Closed Eye EAR: {avg_closed_ear:.3f}")
+        print(f"Personalized Threshold: {calibrated_threshold:.3f}")
+        print(f"{'='*60}\n")
+        
+        # play_audio 'Calibration complete! The system is now personalized for you'
+        calibration_done = True
+        return calibrated_threshold
+    else:
+        # play_audio calibration failed
+        # print smth if u want but is it necessary cus camera position would be far
+        return None
+
+
+def voice_interaction():
+    global system_active, user_is_sleepy, calibration_done, calibrated_ear_threshold
+
     # ask if user plans to drive
-    speak("Are you planning to drive right now?")
+    play_audio('audio/drowsiness_assistant.mp3')
+    time.sleep(1)
     response = listeningcommand()
 
     if response:
@@ -85,11 +246,20 @@ def voice_interaction():
 
         # if user says yes
         if answer is True:
-            system_active = True
-            speak("Great! I'll start monitoring drowsiness.")
-            time.sleep(0.5)
 
-            speak("Are you feeling sleepy?")
+            if not calibration_done:
+                # play audio 'first lets calibrare the system for your eyes'
+                time.sleep(1)
+
+                calibrated_ear_threshold = calibrate_eye_ratio(detect, predict, cap)
+                
+                if calibrated_ear_threshold is None:
+                    # play audio calibration skip using default setting
+                    time.sleep(1)
+
+            system_active = True
+            play_audio('audio/ask_if_sleepy.mp3')
+            time.sleep(0.5)
             is_sleepy = listeningcommand()
 
             if is_sleepy:
@@ -97,41 +267,43 @@ def voice_interaction():
 
                 if sleepy_answer is True:
                     user_is_sleepy = True
-                    speak("Got it. I will be more cautious. It's always better to drive when you are not sleepy. Please stay safe.")
+                    play_audio('audio/is_sleepy.mp3')
 
                 elif sleepy_answer is False:
                     user_is_sleepy = False
-                    speak("Good! I'll monitor you during your drive. Stay alert!")
+                    # actually i wanna change this to 'Good! I'll monitor you during your drive. Stay alert!'
+                    play_audio('audio/normal_monitoring.mp3')
 
                 else:
-                    speak("I will proceed with normal monitoring.")
+                    play_audio('audio/normal_monitoring.mp3')
 
             else:
-                speak("I will proceed with normal monitoring.")
+                play_audio('audio/normal_monitoring.mp3')
 
         # if user says no
         elif answer is False:
             system_active = False
-            speak("Okay! The detection system will remain off. Say 'Hey assistant' when you're ready to drive.")
+            play_audio('audio/remain_off.mp3')
 
         # if answer is unclear
         else:
-            speak("Sorry, I couldn't understand. Please say 'Hey assistant' to continue.")
+            play_audio('audio/to_continue.mp3')
 
     # if no voice detected at all
     else:
-        speak("I didn't hear you. Please say 'Hey assistant' to restart.")
+        play_audio('audio/to_restart.mp3')
 
 def listen_for_wake_word():
     global system_active, user_is_sleepy
     
-    with microphone as source:
+    with sr.Microphone as source:
         recognizer.adjust_for_ambient_noise(source, duration=0.5) # adjust background noise
         
         try:
             audio = recognizer.listen(source, timeout=2, phrase_time_limit=3)
             command = recognizer.recognize_google(audio).lower()
             
+            # you can change this i suggest add
             if 'hey assistant' in command or 'hey system' in command:
                 thread = threading.Thread(target=voice_interaction)
                 thread.daemon = True
@@ -141,13 +313,27 @@ def listen_for_wake_word():
             # allow user to turn stop monitoring with voice
             if system_active and ('stop monitoring' in command or 'turn off' in command):
                 system_active = False
-                speak("Monitoring stopped. Drive safely!")
+                play_audio('audio/monitoring_stopped.mp3')
                 return True
                 
         except:
             pass # ignore all recognition errors and keep listening
     
     return False
+
+def button_callback(event, x, y, flags, param):
+    global button_hover, system_active, user_is_sleepy, calibration_done, calibrated_ear_threshold
+    # function for button
+
+    if button_rect is None:
+        return
+    
+
+
+def draw_button(frame):
+    global button_rect
+    # ui
+
 
 def eye_aspect_ratio(eye):
     A = distance.euclidean(eye[1], eye[5])
@@ -262,7 +448,7 @@ def check_blink_pattern(ear_history, window=10):
     if 2 <= min_idx <= window - 3:
         before_min = np.mean(recent[:min_idx])
         after_min = np.mean(recent[min_idx+1:])
-        if before_min > 0.25 and after_min > 0.25:
+        if before_min > 0.22 and after_min > 0.22: # for various eye types
             return True
     return False
 
@@ -274,7 +460,7 @@ BASE_PERCLOS_THRESH = 0.7
 ROLLING_WINDOW = 60
 
 # head pose thresholds
-PITCH_THRESH = 20
+PITCH_THRESH = 25 # slightly more lenient
 YAW_THRESH = 30
 ROLL_THRESH = 15
 
@@ -283,6 +469,7 @@ flag = 0
 yawn_counter = 0
 head_down_counter = 0
 drowsiness_score = 0
+alert_cooldown = 5
 
 perclos_queue = deque(maxlen=ROLLING_WINDOW)
 ear_history = deque(maxlen=30)
@@ -297,6 +484,9 @@ detect = dlib.get_frontal_face_detector()
 predict = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
 cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
 glasses_detected = False
 ear_threshold = BASE_EAR_THRESH
 
@@ -307,6 +497,10 @@ print("Say 'Hey assistant' to activate the system")
 print("Press 'q' to quit | 'c' to calibrate for narrow eyes")
 print("=" * 60)
 
+# call button callback here
+cv2.namedWindow('Voice-Activated Drowsiness Detection')
+cv2.setMouseCallback('Voice-Activated Drowsiness Detection', button_callback)
+
 # start with voice interaction
 initial_thread = threading.Thread(target=voice_interaction)
 initial_thread.daemon = True
@@ -315,13 +509,22 @@ initial_thread.start()
 last_wake_word_check = time.time()
 wake_word_check_interval = 2  # check every 2 seconds
 
+# main loop for the system ##############!!!!!!!!!!!!!!!!!!!!!!!
 while True:
     ret, frame = cap.read()
     if not ret:
         break
+
+    draw_button(frame)
     
     frame = imutils.resize(frame, width=640)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # adjust threshold based on calibration and sleepiness'
+    if calibrated_ear_threshold is not None:
+        ear_threshold = calibrated_ear_threshold
+    else:
+        ear_threshold = BASE_EAR_THRESH
     
     # adjust thresholds based on sleepiness level
     if user_is_sleepy:
@@ -419,12 +622,12 @@ while True:
             else:
                 yawn_counter = max(0, yawn_counter - 1)
             
-            # head pose detection
+            # head pose detection, improved
             if pitch > PITCH_THRESH:
                 head_down_counter += 1
                 if head_down_counter > 20:
                     drowsiness_score += 1
-                    cv2.putText(frame, "DROWSY: Head Down", (10, 120),
+                    cv2.putText(frame, "DROWSY: Head Down", (10, 150),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
             else:
                 head_down_counter = max(0, head_down_counter -  1)
@@ -487,11 +690,12 @@ while True:
     if key == ord("q"):
         break
     elif key == ord("c"):
-        ear_threshold = 0.20
-        speak("EAR threshold adjusted for narrow eye features")
-        print(f"EAR threshold adjusted to {ear_threshold}")
+        calibrated_ear_threshold = calibrate_eye_ratio(detect, predict, cap)
+        if calibrated_ear_threshold:
+            # u can add smth
+            print(f"EAR threshold adjusted to {ear_threshold}")        
 
 cv2.destroyAllWindows()
 cap.release()
-speak("System shutting down. Drive safely!")
+play_audio('audio/shutting_down.mp3')
 print("System Stopped")
