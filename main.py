@@ -19,17 +19,25 @@ tts_engine = pyttsx3.init()
 tts_engine.setProperty('rate', 150)
 tts_engine.setProperty('volume', 0.9)
 
-# speech recognition
+# set up voice recognition
 recognizer = sr.Recognizer()
+microphoen = sr.Microphone()
 
 system_active = False # drowsiness detection is ON
 user_is_sleepy = False # if user said they're sleepy
 listening_mode = False 
+calibration_done = False
+calibrated_ear_threshold = None
 
-def speak(text):
-    print(f"System: {text}")
-    tts_engine.say(text)
-    tts_engine.runAndWait()
+# button for on/off
+button_rect = None
+button_hover = False
+
+def play_audio(file):
+    mixer.music.load(file)
+    mixer.music.play()
+    while mixer.music.get_busy():
+        time.sleep(0.1)
 
 def listeningcommand():
     global listening_mode
@@ -51,7 +59,7 @@ def listeningcommand():
             listening_mode = False
             return ""
         except sr.RequestError:
-            speak("Sorry, speech service is unavailable")
+            play_audio
             listening_mode = False
             return ""
 
@@ -73,7 +81,7 @@ def voice_interaction():
     global system_active, user_is_sleepy
 
     speak("Hello! I'm your drowsiness detection assistant.")
-    time.sleep(7)
+    # time.sleep(7)
 
     # ask if user plans to drive
     speak("Are you planning to drive right now?")
