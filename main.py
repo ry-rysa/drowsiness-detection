@@ -11,6 +11,8 @@ import speech_recognition as sr
 import pyttsx3
 import threading
 
+# feel free to change the code <3
+
 mixer.init()
 # pls add one more file and revise the code there should be alert and critical alert
 mixer.music.load("audio/alert.wav")
