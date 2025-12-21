@@ -8,7 +8,6 @@ from scipy.spatial import distance
 from pygame import mixer
 from collections import deque
 
-# --- CONFIGURATION ---
 INTRO_AUDIO = "audio/drowsiness_assistant.mp3" 
 TO_CONTINUE_AUDIO = "audio/not_understand.mp3"
 ALERT_AUDIO = "audio/alert.wav"
@@ -18,18 +17,15 @@ START_AUDIO = "audio/normal_monitoring.mp3"
 ALRIGHT_AUDIO = "audio/alright.mp3" 
 STOP_AUDIO = "audio/shutting_down.mp3"  
 
-# --- DEFAULT THRESHOLDS ---
 EAR_THRESH = 0.15  
 MAR_THRESH = 0.5   
-PITCH_THRESH = 8  # Sensitive Head Down
+PITCH_THRESH = 8  # for head down
 
-# --- TUNING ---
 EAR_CONSEC_FRAMES = 5  
 PERCLOS_THRESH = 0.7
 ROLLING_WINDOW = 60
 CALIBRATION_FRAMES = 30 
 
-# --- COLORS ---
 COLOR_CYAN_LIGHT = (255, 255, 0) 
 COLOR_WHITE = (255, 255, 255)
 COLOR_GREEN = (0, 255, 0)
@@ -37,18 +33,16 @@ COLOR_RED = (0, 0, 255)
 COLOR_ORANGE = (0, 165, 255)
 COLOR_YELLOW = (0, 255, 255)
 
-# --- SETUP MEDIAPIPE ---
+# mediapipe
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
 mp_drawing = mp.solutions.drawing_utils
 
-# --- SETUP AUDIO & VOICE ---
 mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 recognizer = sr.Recognizer()
 
-# --- STATE VARIABLES ---
 system_active = False
 calibration_mode = False
 has_played_intro = False
@@ -56,7 +50,6 @@ is_listening_visual = False
 audio_protection_end_time = 0 
 current_playing_file = None 
 
-# Counters
 flag = 0
 yawn_counter = 0
 head_down_counter = 0
@@ -65,7 +58,6 @@ perclos_queue = deque(maxlen=ROLLING_WINDOW)
 calibration_frames = []
 base_pitch = 0
 
-# --- HELPER FUNCTIONS ---
 
 def get_landmarks(frame_w, frame_h, landmarks, indices):
     coords = []
@@ -82,29 +74,27 @@ def detect_open_palm(hand_landmarks):
             mp_hands.HandLandmark.RING_FINGER_PIP, mp_hands.HandLandmark.PINKY_PIP]
     return all(hand_landmarks.landmark[tip].y < hand_landmarks.landmark[pip].y for tip, pip in zip(tips, pips))
 
-# *** FIXED AUDIO FUNCTION ***
+# fixed the audio
 def play_audio(file, loops=0, protection_seconds=0):
     global audio_protection_end_time, current_playing_file
     try:
         current_time = time.time()
         
-        # 1. DUPLICATE CHECK (The Fix): 
-        # If the requested file is ALREADY playing, do nothing.
+        # check fuplicate 
         if mixer.music.get_busy() and current_playing_file == file:
             return 
 
-        # 2. PRIORITY CHECK (Critical Alert overrides everything)
+        # priority check (critical override)
         if file == CRITICAL_ALERT_AUDIO:
              mixer.music.load(file)
              mixer.music.play(loops)
              current_playing_file = file
              return
 
-        # 3. PROTECTION CHECK (Don't interrupt Intro/Voice Prompts)
         if current_time < audio_protection_end_time:
              return
 
-        # 4. STANDARD PLAY
+        # non critical
         mixer.music.load(file)
         mixer.music.play(loops)
         current_playing_file = file
@@ -117,7 +107,7 @@ def play_audio(file, loops=0, protection_seconds=0):
 
 def stop_audio():
     global audio_protection_end_time, current_playing_file
-    # Only stop if protection time has passed
+    # this only stop if protection time has passed
     if time.time() > audio_protection_end_time:
         if mixer.music.get_busy():
             mixer.music.stop()
@@ -148,7 +138,6 @@ def get_head_pose(landmarks, img_w, img_h):
     angles, mtxR, mtxQ, Qx, Qy, Qz = cv2.RQDecomp3x3(rmat)
     return angles[0] * 360, angles[1] * 360, angles[2] * 360
 
-# --- VOICE THREAD LOGIC ---
 def voice_startup_thread():
     global system_active, is_listening_visual, has_played_intro
     
@@ -187,7 +176,6 @@ def voice_startup_thread():
         except:
             is_listening_visual = False
 
-# --- MAIN EXECUTION ---
 
 cap = cv2.VideoCapture(0)
 cap.set(3, 640)
@@ -199,7 +187,7 @@ t.start()
 
 print("SYSTEM READY.")
 
-# Landmark Indices
+# landmark
 LEFT_EYE = [386, 374, 263, 362]
 RIGHT_EYE = [159, 145, 33, 133]
 MOUTH = [13, 14, 61, 291] 
@@ -212,7 +200,7 @@ while True:
     h, w, _ = frame.shape
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     
-    # 1. HAND DETECTION
+    # detect palm
     hand_results = hands.process(rgb_frame)
     if hand_results.multi_hand_landmarks:
         for hand_lms in hand_results.multi_hand_landmarks:
@@ -222,7 +210,7 @@ while True:
                     system_active = True
                     play_audio(START_AUDIO, loops=0, protection_seconds=3.0) 
 
-    # 2. FACE DETECTION
+    # detect faec landmark
     if system_active:
         is_listening_visual = False 
         face_results = face_mesh.process(rgb_frame)
@@ -244,7 +232,7 @@ while True:
                 
                 ear_history.append(ear)
 
-                # --- CALIBRATION ---
+                # calibration
                 if calibration_mode:
                     calibration_frames.append((ear, pitch))
                     cv2.putText(frame, f"CALIBRATING... {len(calibration_frames)}/{CALIBRATION_FRAMES}", (w//2-100, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_CYAN_LIGHT, 2)
@@ -256,7 +244,7 @@ while True:
                         play_audio(ALRIGHT_AUDIO, protection_seconds=3.0) 
                     continue 
 
-                # --- DROWSINESS STATUS ---
+                # drowsiness check
                 is_eyes_closed = False
                 is_yawning = False
                 is_head_down = False
@@ -285,7 +273,6 @@ while True:
                 perclos_queue.append(1 if ear < EAR_THRESH else 0)
                 perclos = sum(perclos_queue) / len(perclos_queue) if perclos_queue else 0
 
-                # --- AUDIO LOGIC ---
                 if is_head_down and is_eyes_closed:
                      play_audio(CRITICAL_ALERT_AUDIO, loops=-1)
                 elif is_eyes_closed:
