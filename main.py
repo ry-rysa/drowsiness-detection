@@ -8,7 +8,6 @@ from scipy.spatial import distance
 from pygame import mixer
 from collections import deque
 
-# --- CONFIGURATION ---
 INTRO_AUDIO = "audio/drowsiness_assistant.mp3" 
 TO_CONTINUE_AUDIO = "audio/not_understand.mp3"
 ALERT_AUDIO = "audio/alert.wav"
@@ -18,37 +17,40 @@ START_AUDIO = "audio/normal_monitoring.mp3"
 ALRIGHT_AUDIO = "audio/alright.mp3" 
 STOP_AUDIO = "audio/shutting_down.mp3"  
 
-# --- DEFAULT THRESHOLDS ---
+# threshold
 EAR_THRESH = 0.15  
 MAR_THRESH = 0.5   
-PITCH_THRESH = 8  # Sensitive Head Down
+PITCH_THRESH = 8  # head down
 
-# --- TUNING ---
 EAR_CONSEC_FRAMES = 5  
 PERCLOS_THRESH = 0.7
 ROLLING_WINDOW = 60
 CALIBRATION_FRAMES = 30 
 
-# --- COLORS ---
-COLOR_CYAN_LIGHT = (255, 255, 0) 
+COLOR_CYAN_LIGHT = (255, 255, 0)
 COLOR_WHITE = (255, 255, 255)
 COLOR_GREEN = (0, 255, 0)
 COLOR_RED = (0, 0, 255)
 COLOR_ORANGE = (0, 165, 255)
 COLOR_YELLOW = (0, 255, 255)
 
-# --- SETUP MEDIAPIPE ---
+# UI palette (BGR)
+CLAUDE_ORANGE = (35, 107, 255)   # warm orange accent
+PANEL_DARK = (18, 18, 18)
+TEXT_PRI = (235, 235, 235)
+TEXT_MUT = (120, 120, 120)
+COLOR_EYE = (255, 200, 120)      # soft blue for landmark overlays
+COLOR_SAFE = (60, 200, 70)       # green status
+
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7)
 mp_drawing = mp.solutions.drawing_utils
 
-# --- SETUP AUDIO & VOICE ---
 mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
 recognizer = sr.Recognizer()
 
-# --- STATE VARIABLES ---
 system_active = False
 calibration_mode = False
 has_played_intro = False
@@ -56,7 +58,6 @@ is_listening_visual = False
 audio_protection_end_time = 0 
 current_playing_file = None 
 
-# Counters
 flag = 0
 yawn_counter = 0
 head_down_counter = 0
@@ -65,8 +66,6 @@ perclos_queue = deque(maxlen=ROLLING_WINDOW)
 calibration_frames = []
 base_pitch = 0
 
-# --- HELPER FUNCTIONS ---
-
 def get_landmarks(frame_w, frame_h, landmarks, indices):
     coords = []
     for idx in indices:
@@ -74,7 +73,7 @@ def get_landmarks(frame_w, frame_h, landmarks, indices):
         coords.append((int(lm.x * frame_w), int(lm.y * frame_h)))
     return coords
 
-# --- GESTURE ACTIVATION ---
+# gesture
 def detect_open_palm(hand_landmarks):    
     if not hand_landmarks: return False
     tips = [mp_hands.HandLandmark.INDEX_FINGER_TIP, mp_hands.HandLandmark.MIDDLE_FINGER_TIP, 
@@ -83,29 +82,25 @@ def detect_open_palm(hand_landmarks):
             mp_hands.HandLandmark.RING_FINGER_PIP, mp_hands.HandLandmark.PINKY_PIP]
     return all(hand_landmarks.landmark[tip].y < hand_landmarks.landmark[pip].y for tip, pip in zip(tips, pips))
 
-# --- AUDIO FUNCTION ---
+# audio
 def play_audio(file, loops=0, protection_seconds=0):
     global audio_protection_end_time, current_playing_file
     try:
         current_time = time.time()
         
-        # 1. DUPLICATE CHECK: 
-        # If the requested file is ALREADY playing, do nothing.
         if mixer.music.get_busy() and current_playing_file == file:
             return 
 
-        # 2. PRIORITY CHECK (Critical Alert overrides everything)
+        # priority -> critical alert overrides 
         if file == CRITICAL_ALERT_AUDIO:
              mixer.music.load(file)
              mixer.music.play(loops)
              current_playing_file = file
              return
 
-        # 3. PROTECTION CHECK (Don't interrupt Intro/Voice Prompts)
         if current_time < audio_protection_end_time:
              return
 
-        # 4. STANDARD PLAY
         mixer.music.load(file)
         mixer.music.play(loops)
         current_playing_file = file
@@ -118,11 +113,52 @@ def play_audio(file, loops=0, protection_seconds=0):
 
 def stop_audio():
     global audio_protection_end_time, current_playing_file
-    # Only stop if protection time has passed
     if time.time() > audio_protection_end_time:
         if mixer.music.get_busy():
             mixer.music.stop()
             current_playing_file = None
+
+def draw_panel(frame, x, y, w, h, alpha=0.72, color=None):
+    if color is None: color = PANEL_DARK
+    sub = frame[y:y+h, x:x+w]
+    bg = np.zeros_like(sub)
+    bg[:] = color
+    frame[y:y+h, x:x+w] = cv2.addWeighted(bg, alpha, sub, 1 - alpha, 0)
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (55, 55, 55), 1)
+
+def draw_metric_bar(frame, x, y, label, value, max_val, color, width=168, threshold=None):
+    cv2.putText(frame, label, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_MUT, 1, cv2.LINE_AA)
+    cv2.putText(frame, f"{value:.2f}", (x + width - 28, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_PRI, 1, cv2.LINE_AA)
+    bar_y, bar_h = y + 5, 7
+    cv2.rectangle(frame, (x, bar_y), (x + width, bar_y + bar_h), (45, 45, 45), -1)
+    fill_w = int(min(max(value, 0) / max_val, 1.0) * width)
+    if fill_w > 0:
+        cv2.rectangle(frame, (x, bar_y), (x + fill_w, bar_y + bar_h), color, -1)
+    if threshold is not None:
+        tx = x + int(min(threshold / max_val, 1.0) * width)
+        cv2.line(frame, (tx, bar_y - 2), (tx, bar_y + bar_h + 2), (100, 100, 220), 2)
+    cv2.rectangle(frame, (x, bar_y), (x + width, bar_y + bar_h), (65, 65, 65), 1)
+
+def draw_status_pill(frame, x, y, text, color):
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+    px, py = 9, 5
+    x1, y1, x2, y2 = x, y - th - py, x + tw + 2 * px, y + py
+    sub = frame[y1:y2, x1:x2]
+    bg = np.zeros_like(sub)
+    bg[:] = color
+    frame[y1:y2, x1:x2] = cv2.addWeighted(bg, 0.82, sub, 0.18, 0)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1)
+    cv2.putText(frame, text, (x + px, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, TEXT_PRI, 1, cv2.LINE_AA)
+
+def draw_alert_border(frame, color, thickness=8):
+    fh, fw = frame.shape[:2]
+    cv2.rectangle(frame, (0, 0), (fw - 1, fh - 1), color, thickness)
+
+def draw_glow_poly(frame, points, color, thickness=2):
+    pts = np.array(points)
+    glow = tuple(int(c * 0.4) for c in color)
+    cv2.polylines(frame, [pts], True, glow, thickness + 5)
+    cv2.polylines(frame, [pts], True, color, thickness, cv2.LINE_AA)
 
 def calculate_aspect_ratio(points):
     V = distance.euclidean(points[0], points[1])
@@ -149,7 +185,6 @@ def get_head_pose(landmarks, img_w, img_h):
     angles, mtxR, mtxQ, Qx, Qy, Qz = cv2.RQDecomp3x3(rmat)
     return angles[0] * 360, angles[1] * 360, angles[2] * 360
 
-# --- VOICE THREAD LOGIC ---
 def voice_startup_thread():
     global system_active, is_listening_visual, has_played_intro
     
@@ -167,7 +202,6 @@ def voice_startup_thread():
                     audio = recognizer.listen(source, timeout=5, phrase_time_limit=3)
                     is_listening_visual = False
                     
-                    # --- VOICE ACTIVATION ---
                     command = recognizer.recognize_google(audio).lower()
                     print(f"User said: {command}")
                     
@@ -189,8 +223,6 @@ def voice_startup_thread():
         except:
             is_listening_visual = False
 
-# --- MAIN EXECUTION ---
-
 cap = cv2.VideoCapture(0)
 cap.set(3, 640)
 cap.set(4, 480)
@@ -201,7 +233,7 @@ t.start()
 
 print("SYSTEM READY.")
 
-# Landmark Indices
+# landmark
 LEFT_EYE = [386, 374, 263, 362]
 RIGHT_EYE = [159, 145, 33, 133]
 MOUTH = [13, 14, 61, 291] 
@@ -214,7 +246,7 @@ while True:
     h, w, _ = frame.shape
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     
-    # 1. HAND DETECTION
+    # hand detection
     hand_results = hands.process(rgb_frame)
     if hand_results.multi_hand_landmarks:
         for hand_lms in hand_results.multi_hand_landmarks:
@@ -224,13 +256,17 @@ while True:
                     system_active = True
                     play_audio(START_AUDIO, loops=0, protection_seconds=3.0) 
 
-    # 2. FACE DETECTION
+    # face detection
     if system_active:
         is_listening_visual = False 
         face_results = face_mesh.process(rgb_frame)
         
-        cv2.putText(frame, "MONITORING ACTIVE", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_GREEN, 2)
-        cv2.putText(frame, "Press 'c' to Calibrate | Press 'q' to Quit", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        draw_panel(frame, 0, 0, w, 62)
+        cv2.putText(frame, "DROWSINESS MONITOR", (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.48, TEXT_MUT, 1, cv2.LINE_AA)
+        draw_status_pill(frame, 12, 52, "ACTIVE", COLOR_SAFE)
+        hint = "C: Calibrate   F: Stop   Q: Quit"
+        (hw, _), _ = cv2.getTextSize(hint, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+        cv2.putText(frame, hint, (w - hw - 12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.38, TEXT_MUT, 1, cv2.LINE_AA)
         
         if face_results.multi_face_landmarks:
             for face_lms in face_results.multi_face_landmarks:
@@ -239,7 +275,7 @@ while True:
                 right_eye = get_landmarks(w, h, landmarks, RIGHT_EYE)
                 mouth = get_landmarks(w, h, landmarks, MOUTH)
                 
-                # Landmark Mapping from 478-point mesh
+                # 478-point mesh
                 ear = (calculate_aspect_ratio(left_eye) + calculate_aspect_ratio(right_eye)) / 2.0
                 mar = calculate_aspect_ratio(mouth) 
                 pitch, yaw, roll = get_head_pose(landmarks, w, h)
@@ -247,11 +283,18 @@ while True:
                 
                 ear_history.append(ear)
 
-                # --- CALIBRATION ---
+                # calibration
                 if calibration_mode:
                     calibration_frames.append((ear, pitch))
-                    cv2.putText(frame, f"CALIBRATING... {len(calibration_frames)}/{CALIBRATION_FRAMES}", (w//2-100, h//2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, COLOR_CYAN_LIGHT, 2)
-                    # Personalizing thresholds based on 30-frame mean
+                    prog = len(calibration_frames) / CALIBRATION_FRAMES
+                    draw_panel(frame, w//2 - 140, h//2 - 45, 280, 90)
+                    cv2.putText(frame, "CALIBRATING", (w//2 - 58, h//2 - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.55, CLAUDE_ORANGE, 1, cv2.LINE_AA)
+                    bx = w//2 - 110
+                    cv2.rectangle(frame, (bx, h//2), (bx + 220, h//2 + 10), (45, 45, 45), -1)
+                    cv2.rectangle(frame, (bx, h//2), (bx + int(220 * prog), h//2 + 10), CLAUDE_ORANGE, -1)
+                    cv2.rectangle(frame, (bx, h//2), (bx + 220, h//2 + 10), (70, 70, 70), 1)
+                    cv2.putText(frame, f"{len(calibration_frames)} / {CALIBRATION_FRAMES}", (w//2 - 25, h//2 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.42, TEXT_MUT, 1, cv2.LINE_AA)
+                    # personalize
                     if len(calibration_frames) >= CALIBRATION_FRAMES:
                         EAR_THRESH = np.mean([x[0] for x in calibration_frames]) * 0.75  
                         base_pitch = np.mean([x[1] for x in calibration_frames])
@@ -260,7 +303,7 @@ while True:
                         play_audio(ALRIGHT_AUDIO, protection_seconds=3.0) 
                     continue 
 
-                # --- DROWSINESS STATUS ---
+                # drowsiness status
                 is_eyes_closed = False
                 is_yawning = False
                 is_head_down = False
@@ -289,49 +332,71 @@ while True:
                 perclos_queue.append(1 if ear < EAR_THRESH else 0)
                 perclos = sum(perclos_queue) / len(perclos_queue) if perclos_queue else 0
 
-                # --- AUDIO LOGIC ---
                 if is_head_down and is_eyes_closed:
-                     # Tier 3: Critical Multimodal Failure
+                     # critical
                      play_audio(CRITICAL_ALERT_AUDIO, loops=-1)
                 elif is_eyes_closed:
-                     # Tier 2: Active Microsleep
+                     # microsleep
                      play_audio(ALERT_AUDIO, loops=-1)
                 elif is_yawning:
-                     # Tier 1: Yawn Detection
+                     # yawning
                      play_audio(YAWN_AUDIO, loops=0)
                 else:
                      stop_audio()
 
-                # --- UI: STATS (Top Left) ---
-                start_y = 85
-                line_spacing = 25
-                cv2.putText(frame, f"EAR: {ear:.2f} (Thresh: {EAR_THRESH:.2f})", (10, start_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_WHITE, 1)
-                cv2.putText(frame, f"MAR: {mar:.2f}", (10, start_y + line_spacing), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_WHITE, 1)
-                cv2.putText(frame, f"Pitch: {relative_pitch:.1f} (Base: {base_pitch:.1f})", (10, start_y + 2*line_spacing), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_WHITE, 1)
-                cv2.putText(frame, f"PERCLOS: {perclos:.2f}", (10, start_y + 3*line_spacing), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_WHITE, 1)
+                # metrics panel
+                px, py, pw, ph = 10, 72, 195, 155
+                draw_panel(frame, px, py, pw, ph)
+                mx, my = px + 12, py + 18
+                cv2.putText(frame, "METRICS", (mx, my), cv2.FONT_HERSHEY_SIMPLEX, 0.4, CLAUDE_ORANGE, 1, cv2.LINE_AA)
+                draw_metric_bar(frame, mx, my + 20, "EAR", ear, 0.5, COLOR_SAFE if ear >= EAR_THRESH else COLOR_RED, threshold=EAR_THRESH)
+                draw_metric_bar(frame, mx, my + 50, "MAR", mar, 1.2, CLAUDE_ORANGE if mar > MAR_THRESH else TEXT_MUT, threshold=MAR_THRESH)
+                perclos_c = COLOR_RED if perclos > PERCLOS_THRESH else (COLOR_ORANGE if perclos > 0.4 else COLOR_SAFE)
+                draw_metric_bar(frame, mx, my + 80, "PERCLOS", perclos, 1.0, perclos_c)
+                pitch_c = COLOR_ORANGE if is_head_down else TEXT_MUT
+                cv2.putText(frame, f"PITCH  {relative_pitch:+.1f}", (mx, my + 115), cv2.FONT_HERSHEY_SIMPLEX, 0.42, pitch_c, 1, cv2.LINE_AA)
 
-                # --- UI: ALERTS (Bottom Left) ---
-                bottom_y = h - 20
+                # Landmark overlays with glow
+                draw_glow_poly(frame, left_eye, COLOR_EYE)
+                draw_glow_poly(frame, right_eye, COLOR_EYE)
+                draw_glow_poly(frame, mouth, CLAUDE_ORANGE)
+
+                # Alert border + bottom banner
                 if is_head_down and is_eyes_closed:
-                     cv2.putText(frame, "!!! CRITICAL DROWSINESS: HEAD DOWN + EYES CLOSED !!!", (10, bottom_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_RED, 2)
+                    draw_alert_border(frame, COLOR_RED, 9)
+                    draw_panel(frame, 0, h - 52, w, 52, alpha=0.88, color=(25, 15, 15))
+                    cv2.putText(frame, "CRITICAL  HEAD DOWN + EYES CLOSED", (12, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_RED, 2, cv2.LINE_AA)
                 elif is_eyes_closed:
-                    text = "Warning: Eyes Closed" + (" + Yawn alert!" if is_yawning else "")
-                    cv2.putText(frame, text, (10, bottom_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_RED, 2)
+                    draw_alert_border(frame, COLOR_RED, 7)
+                    draw_panel(frame, 0, h - 52, w, 52, alpha=0.88, color=(25, 15, 15))
+                    txt = "ALERT  Eyes Closed" + ("  +  Yawning" if is_yawning else "")
+                    cv2.putText(frame, txt, (12, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_RED, 2, cv2.LINE_AA)
                 elif is_yawning:
-                    cv2.putText(frame, "Warning: Yawn Alert!", (10, bottom_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_ORANGE, 2)
+                    draw_alert_border(frame, COLOR_ORANGE, 5)
+                    draw_panel(frame, 0, h - 52, w, 52, alpha=0.85, color=(22, 20, 15))
+                    cv2.putText(frame, "WARNING  Yawning Detected", (12, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_ORANGE, 2, cv2.LINE_AA)
                 elif is_head_down:
-                    cv2.putText(frame, "Warning: Head Down", (10, bottom_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_ORANGE, 2)
-
-                cv2.polylines(frame, [np.array(left_eye)], True, COLOR_CYAN_LIGHT, 1)
-                cv2.polylines(frame, [np.array(right_eye)], True, COLOR_CYAN_LIGHT, 1)
-                cv2.polylines(frame, [np.array(mouth)], True, COLOR_CYAN_LIGHT, 1)
+                    draw_alert_border(frame, COLOR_ORANGE, 5)
+                    draw_panel(frame, 0, h - 52, w, 52, alpha=0.85, color=(22, 20, 15))
+                    cv2.putText(frame, "WARNING  Head Down", (12, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.65, COLOR_ORANGE, 2, cv2.LINE_AA)
+                else:
+                    draw_panel(frame, 0, h - 52, w, 52, alpha=0.7)
+                    cv2.putText(frame, "DRIVER ALERT", (12, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.6, COLOR_SAFE, 1, cv2.LINE_AA)
                 
     else:
-        cv2.putText(frame, "SYSTEM OFF", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
-        cv2.putText(frame, "Say 'Yes' or Show Palm to Start | Press 'q' to Exit", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (150, 150, 150), 1)
-        
+        dark = np.zeros_like(frame)
+        dark[:] = (8, 8, 8)
+        frame[:] = cv2.addWeighted(dark, 0.45, frame, 0.55, 0)
+        cw, ch = 360, 115
+        cx, cy = w // 2 - cw // 2, h // 2 - ch // 2
+        draw_panel(frame, cx, cy, cw, ch, alpha=0.90)
+        cv2.putText(frame, "DROWSINESS MONITOR", (cx + 18, cy + 26), cv2.FONT_HERSHEY_SIMPLEX, 0.52, CLAUDE_ORANGE, 1, cv2.LINE_AA)
+        cv2.line(frame, (cx + 18, cy + 36), (cx + cw - 18, cy + 36), (55, 55, 55), 1)
+        cv2.putText(frame, "Say 'Yes' or show palm to start", (cx + 18, cy + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.42, TEXT_MUT, 1, cv2.LINE_AA)
+        cv2.putText(frame, "Press Q to quit", (cx + 18, cy + 82), cv2.FONT_HERSHEY_SIMPLEX, 0.42, TEXT_MUT, 1, cv2.LINE_AA)
         if is_listening_visual:
-            cv2.putText(frame, "LISTENING...", (w//2 - 80, 100), cv2.FONT_HERSHEY_SIMPLEX, 1.0, COLOR_YELLOW, 2)
+            cv2.circle(frame, (cx + 24, cy + 104), 5, COLOR_YELLOW, -1)
+            cv2.putText(frame, "LISTENING", (cx + 36, cy + 108), cv2.FONT_HERSHEY_SIMPLEX, 0.48, COLOR_YELLOW, 1, cv2.LINE_AA)
 
     cv2.imshow("Drowsiness Detection", frame)
     
