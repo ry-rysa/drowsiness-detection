@@ -35,13 +35,12 @@ COLOR_ORANGE = (0, 165, 255)
 COLOR_YELLOW = (0, 255, 255)
 
 # UI palette (BGR)
-CLAUDE_ORANGE = (35, 107, 255)   # warm orange accent
+CLAUDE_ORANGE = (35, 107, 255)   
 PANEL_DARK = (18, 18, 18)
 TEXT_PRI = (235, 235, 235)
 TEXT_MUT = (120, 120, 120)
-COLOR_EYE = (255, 200, 120)      # soft blue for landmark overlays
-COLOR_SAFE = (60, 200, 70)       # green status
-
+COLOR_EYE = (255, 200, 120)      
+COLOR_SAFE = (60, 200, 70)       
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
 mp_hands = mp.solutions.hands
